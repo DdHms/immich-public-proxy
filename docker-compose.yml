@@ -1,6 +1,6 @@
 services:
   immich-public-proxy:
-    image: alangrainger/immich-public-proxy:latest
+    image: dd.hms/immich-public-proxy:latest
     container_name: immich-public-proxy
     restart: always
     ports:
