@@ -6,6 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      VIDEO_QUALITY=playback
       PUBLIC_BASE_URL: https://your-proxy-url.com
       IMMICH_URL: http://your-internal-immich-server:2283
     healthcheck:
