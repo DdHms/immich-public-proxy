@@ -5,7 +5,7 @@ import { canDownload, getConfigOption } from './functions'
 import archiver from 'archiver'
 import { respondToInvalidRequest } from './invalidRequestHandler'
 import { sanitize } from './includes/sanitize'
-import { Readable } from 'stream' // Optimized streaming
+import { Readable } from 'stream'
 
 class Render {
   lgConfig
@@ -30,7 +30,7 @@ class Render {
       return
     }
 
-    // Prepare the request headers
+    // Prepare the request
     const headerList = ['content-type', 'content-length', 'last-modified', 'etag']
     size = immich.validateImageSize(size)
     let subpath, sizeQueryParam
@@ -47,16 +47,20 @@ class Render {
         subpath = '/' + size
       }
     }
-
+    
     const headers: Record<string, string> = {}
 
     // OPTIMIZED VIDEO STREAMING LOGIC
     if (asset.type === AssetType.video) {
-      const rangeHeader = req.headers.range || ''
+      // Use the browser's requested range if available, otherwise default to start
+      const rangeHeader = (req as any).headers?.range || req.range || ''
       const range = rangeHeader.replace(/bytes=/, '').split('-')
       const start = parseInt(range[0], 10) || 0
       
-      // Increased chunk size to 10MB to reduce proxy overhead/round-trips
+      /**
+       * OPTIMIZATION: Increased chunk size to 10MB.
+       * This reduces the overhead of multiple HTTP handshakes through your proxy.
+       */
       const CHUNK_SIZE = 10 * 1024 * 1024 
       const end = range[1] ? parseInt(range[1], 10) : start + CHUNK_SIZE - 1
       
@@ -71,7 +75,7 @@ class Render {
       size: sizeQueryParam,
       password: asset.password
     })
-
+    
     const data = await fetch(url, { headers })
 
     // Add the filename for downloaded assets
@@ -80,20 +84,22 @@ class Render {
     }
 
     // Return the response to the client
-    if (data.ok) {
-      // Populate whitelisted response headers
+    if (data.status >= 200 && data.status < 300) {
+      // Set the appropriate status (usually 206 for video, 200 for images)
+      res.status(data.status)
+
+      // Populate headers
       headerList.forEach(header => {
         const value = data.headers.get(header)
         if (value) res.setHeader(header, value)
       })
 
-      // Set the specific status (206 for partial, 200 for full)
-      res.status(data.status)
-
-      // HIGH-PERFORMANCE PIPING
-      // We convert the Web Stream to a Node Stream for better Express integration
+      /**
+       * OPTIMIZATION: Direct piping.
+       * Converts the web Fetch stream to a Node stream for maximum throughput.
+       */
       if (data.body) {
-        Readable.fromWeb(data.body as any).pipe(res)
+        (Readable as any).fromWeb(data.body as any).pipe(res)
       } else {
         res.end()
       }
@@ -107,9 +113,6 @@ class Render {
     }
   }
 
-  /**
-   * Render a gallery page for a given SharedLink
-   */
   async gallery (res: Response, share: SharedLink, openItem?: number) {
     const publicBaseUrl = process.env.PUBLIC_BASE_URL || res.req.headers.publicBaseUrl || (res.req.protocol + '://' + res.req.headers.host)
 
@@ -123,10 +126,7 @@ class Render {
               type: await immich.getVideoContentType(asset)
             }
           ],
-          attributes: {
-            playsinline: 'playsinline',
-            controls: 'controls'
-          }
+          attributes: { playsinline: 'playsinline', controls: 'controls' }
         })
       }
       if (getConfigOption('ipp.downloadOriginalPhoto', true)) {
@@ -146,11 +146,7 @@ class Render {
         '</a>'
       ].join('')
 
-      return {
-        html: itemHtml,
-        thumbnailUrl,
-        previewUrl
-      }
+      return { html: itemHtml, thumbnailUrl, previewUrl }
     }))
 
     res.render('gallery', {
@@ -182,28 +178,22 @@ class Render {
         password: asset.password
       })
       const data = await fetch(url)
-      if (!data.ok) {
-        console.warn(`Failed to fetch asset: ${asset.id}`)
-        continue
-      }
+      if (!data.ok) continue
       archive.append(Buffer.from(await data.arrayBuffer()), { name: this.getFilename(asset) })
     }
     await archive.finalize()
+    archive.on('end', () => res.end())
   }
 
   getFilename (asset: Asset) {
     const extension = asset.originalFileName?.match(/(\.\w+)$/)?.[1] || ''
     switch (getConfigOption('ipp.downloadedFilename')) {
-      case 1:
-        return asset.id + extension
-      case 2:
-        return 'img_' + asset.id.slice(0, 8) + extension
-      default:
-        return asset.originalFileName || (asset.id + extension)
+      case 1: return asset.id + extension
+      case 2: return 'img_' + asset.id.slice(0, 8) + extension
+      default: return asset.originalFileName || (asset.id + extension)
     }
   }
 }
 
 const render = new Render()
 export default render
-  
