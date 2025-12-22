@@ -24,19 +24,23 @@ class Render {
     }))
     const meta = await metaRes.json()
 
-    // Make sure we should display this asset
     if (meta.isTrashed || meta.visibility === 'locked') {
       respondToInvalidRequest(res, 404, `Asset ${asset.id} is trashed or locked`)
       return
     }
 
-    // Prepare the request
     const headerList = ['content-type', 'content-length', 'last-modified', 'etag']
     size = immich.validateImageSize(size)
     let subpath, sizeQueryParam
     
     if (asset.type === AssetType.video) {
-      subpath = '/video/playback'
+      /**
+       * QUALITY OPTIMIZATION:
+       * Checks the environment variable set in docker-compose.
+       * Default is 'playback' (low quality/fast). Set to 'original' for high quality.
+       */
+      const qualitySetting = process.env.VIDEO_QUALITY?.toLowerCase() || 'playback'
+      subpath = qualitySetting === 'original' ? '/original' : '/video/playback'
     } else if (asset.type === AssetType.image) {
       if (size === ImageSize.original && getConfigOption('ipp.downloadOriginalPhoto', true)) {
         subpath = '/original'
@@ -50,17 +54,12 @@ class Render {
     
     const headers: Record<string, string> = {}
 
-    // OPTIMIZED VIDEO STREAMING LOGIC
     if (asset.type === AssetType.video) {
-      // Use the browser's requested range if available, otherwise default to start
       const rangeHeader = (req as any).headers?.range || req.range || ''
       const range = rangeHeader.replace(/bytes=/, '').split('-')
       const start = parseInt(range[0], 10) || 0
       
-      /**
-       * OPTIMIZATION: Increased chunk size to 10MB.
-       * This reduces the overhead of multiple HTTP handshakes through your proxy.
-       */
+      // 10MB Chunks to reduce proxy handshake overhead
       const CHUNK_SIZE = 10 * 1024 * 1024 
       const end = range[1] ? parseInt(range[1], 10) : start + CHUNK_SIZE - 1
       
@@ -69,7 +68,6 @@ class Render {
       res.setHeader('accept-ranges', 'bytes')
     }
 
-    // Request data from Immich
     const url = immich.buildUrl(immich.apiUrl() + '/assets/' + encodeURIComponent(asset.id) + subpath, {
       [asset.keyType || 'key']: asset.key,
       size: sizeQueryParam,
@@ -78,27 +76,19 @@ class Render {
     
     const data = await fetch(url, { headers })
 
-    // Add the filename for downloaded assets
     if (size === ImageSize.original && asset.originalFileName && getConfigOption('ipp.downloadOriginalPhoto', true)) {
       res.setHeader('Content-Disposition', `attachment; filename="${this.getFilename(asset)}"`)
     }
 
-    // Return the response to the client
     if (data.status >= 200 && data.status < 300) {
-      // Set the appropriate status (usually 206 for video, 200 for images)
       res.status(data.status)
-
-      // Populate headers
       headerList.forEach(header => {
         const value = data.headers.get(header)
         if (value) res.setHeader(header, value)
       })
 
-      /**
-       * OPTIMIZATION: Direct piping.
-       * Converts the web Fetch stream to a Node stream for maximum throughput.
-       */
       if (data.body) {
+        // High-performance native piping
         (Readable as any).fromWeb(data.body as any).pipe(res)
       } else {
         res.end()
